@@ -143,6 +143,7 @@ endif
 
 ifneq (, $(filter $(word 2,$(subst _, ,$(TARGET_PRODUCT))), peridot))
     CDEFINES += -DCONFIG_TARGET_PRODUCT_PERIDOT
+	CDEFINES += -DCONFIG_SOUND_CONTROL
 endif
 
 ifneq (, $(filter $(word 2,$(subst _, ,$(TARGET_PRODUCT))), muyu))

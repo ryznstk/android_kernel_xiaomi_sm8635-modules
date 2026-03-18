@@ -12,11 +12,14 @@
 #include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/clk.h>
+#include <linux/kobject.h>
+#include <linux/sysfs.h>
 #include <soc/snd_event.h>
 #include <linux/pm_runtime.h>
 #include <soc/swr-common.h>
 #include <dsp/digital-cdc-rsc-mgr.h>
 #include "lpass-cdc.h"
+#include "lpass-cdc-registers.h"
 #include "internal.h"
 #include "lpass-cdc-clk-rsc.h"
 #include <linux/qti-regmap-debugfs.h>
@@ -27,6 +30,185 @@
 #define LPASS_CDC_STRING_LEN 80
 
 static const struct snd_soc_component_driver lpass_cdc;
+
+#ifdef CONFIG_SOUND_CONTROL
+#define SOUND_CONTROL_GAIN_MIN_DB (-84)
+#define SOUND_CONTROL_GAIN_MAX_DB (40)
+
+static struct snd_soc_component *sound_control_component;
+static struct kobject *sound_control_kobj;
+
+static int sound_control_parse_stereo(const char *buf, int *left, int *right)
+{
+	return sscanf(buf, "%d %d", left, right) == 2 ? 0 : -EINVAL;
+}
+
+static int sound_control_parse_mono(const char *buf, int *val)
+{
+	return kstrtoint(buf, 0, val);
+}
+
+static inline int sound_control_clamp_gain(int gain)
+{
+	if (gain < SOUND_CONTROL_GAIN_MIN_DB || gain > SOUND_CONTROL_GAIN_MAX_DB)
+		return 0;
+
+	return gain;
+}
+
+static ssize_t headphone_gain_show(struct kobject *kobj,
+				   struct kobj_attribute *attr, char *buf)
+{
+	if (!sound_control_component)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d %d\n",
+		snd_soc_component_read(sound_control_component,
+			LPASS_CDC_RX_RX0_RX_VOL_CTL),
+		snd_soc_component_read(sound_control_component,
+			LPASS_CDC_RX_RX1_RX_VOL_CTL));
+}
+
+static ssize_t headphone_gain_store(struct kobject *kobj,
+				    struct kobj_attribute *attr,
+				    const char *buf, size_t count)
+{
+	int left = 0, right = 0;
+
+	if (!sound_control_component)
+		return -ENODEV;
+
+	if (sound_control_parse_stereo(buf, &left, &right))
+		return -EINVAL;
+
+	left = sound_control_clamp_gain(left);
+	right = sound_control_clamp_gain(right);
+
+	snd_soc_component_write(sound_control_component,
+		LPASS_CDC_RX_RX0_RX_VOL_CTL, left);
+	snd_soc_component_write(sound_control_component,
+		LPASS_CDC_RX_RX1_RX_VOL_CTL, right);
+
+	return count;
+}
+
+static struct kobj_attribute headphone_gain_attribute =
+	__ATTR(headphone_gain, 0664, headphone_gain_show, headphone_gain_store);
+
+static ssize_t mic_gain_show(struct kobject *kobj,
+			     struct kobj_attribute *attr, char *buf)
+{
+	if (!sound_control_component)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d\n",
+		snd_soc_component_read(sound_control_component,
+			LPASS_CDC_TX0_TX_VOL_CTL));
+}
+
+static ssize_t mic_gain_store(struct kobject *kobj,
+			      struct kobj_attribute *attr,
+			      const char *buf, size_t count)
+{
+	int gain = 0;
+
+	if (!sound_control_component)
+		return -ENODEV;
+
+	if (sound_control_parse_mono(buf, &gain))
+		return -EINVAL;
+
+	gain = sound_control_clamp_gain(gain);
+
+	snd_soc_component_write(sound_control_component,
+		LPASS_CDC_TX0_TX_VOL_CTL, gain);
+
+	return count;
+}
+
+static struct kobj_attribute mic_gain_attribute =
+	__ATTR(mic_gain, 0664, mic_gain_show, mic_gain_store);
+
+static ssize_t speaker_gain_show(struct kobject *kobj,
+				 struct kobj_attribute *attr, char *buf)
+{
+	if (!sound_control_component)
+		return -ENODEV;
+
+	return sysfs_emit(buf, "%d\n",
+		snd_soc_component_read(sound_control_component,
+			LPASS_CDC_RX_RX2_RX_VOL_CTL));
+}
+
+static ssize_t speaker_gain_store(struct kobject *kobj,
+				  struct kobj_attribute *attr,
+				  const char *buf, size_t count)
+{
+	int gain = 0;
+
+	if (!sound_control_component)
+		return -ENODEV;
+
+	if (sound_control_parse_mono(buf, &gain))
+		return -EINVAL;
+
+	gain = sound_control_clamp_gain(gain);
+
+	snd_soc_component_write(sound_control_component,
+		LPASS_CDC_RX_RX2_RX_VOL_CTL, gain);
+
+	return count;
+}
+
+static struct kobj_attribute speaker_gain_attribute =
+	__ATTR(speaker_gain, 0664, speaker_gain_show, speaker_gain_store);
+
+static struct attribute *sound_control_attrs[] = {
+	&headphone_gain_attribute.attr,
+	&mic_gain_attribute.attr,
+	&speaker_gain_attribute.attr,
+	NULL,
+};
+
+static const struct attribute_group sound_control_attr_group = {
+	.attrs = sound_control_attrs,
+};
+
+static int sound_control_sysfs_init(struct snd_soc_component *component)
+{
+	int ret;
+
+	sound_control_component = component;
+
+	if (sound_control_kobj)
+		return 0;
+
+	sound_control_kobj = kobject_create_and_add("sound_control", kernel_kobj);
+	if (!sound_control_kobj)
+		return -ENOMEM;
+
+	ret = sysfs_create_group(sound_control_kobj, &sound_control_attr_group);
+	if (ret) {
+		kobject_put(sound_control_kobj);
+		sound_control_kobj = NULL;
+		return ret;
+	}
+
+	return 0;
+}
+
+static void sound_control_sysfs_exit(void)
+{
+	sound_control_component = NULL;
+
+	if (!sound_control_kobj)
+		return;
+
+	sysfs_remove_group(sound_control_kobj, &sound_control_attr_group);
+	kobject_put(sound_control_kobj);
+	sound_control_kobj = NULL;
+}
+#endif
 
 /* pm runtime auto suspend timer in msecs */
 #define LPASS_CDC_AUTO_SUSPEND_DELAY          100 /* delay in msec */
@@ -1187,6 +1369,16 @@ static int lpass_cdc_soc_codec_probe(struct snd_soc_component *component)
 	}
 	priv->component = component;
 
+#ifdef CONFIG_SOUND_CONTROL
+	ret = sound_control_sysfs_init(component);
+	if (ret) {
+		dev_err(component->dev,
+			"%s: sound_control sysfs init failed, ret = %d\n",
+			__func__, ret);
+		goto err;
+	}
+#endif
+
 	ret = snd_event_client_register(priv->dev, &lpass_cdc_ssr_ops, priv);
 	if (!ret) {
 		snd_event_notify(priv->dev, SND_EVENT_UP);
@@ -1207,6 +1399,10 @@ static void lpass_cdc_soc_codec_remove(struct snd_soc_component *component)
 {
 	struct lpass_cdc_priv *priv = dev_get_drvdata(component->dev);
 	int macro_idx;
+
+#ifdef CONFIG_SOUND_CONTROL
+	sound_control_sysfs_exit();
+#endif
 
 	snd_event_client_deregister(priv->dev);
 	/* call exit for supported macros */
