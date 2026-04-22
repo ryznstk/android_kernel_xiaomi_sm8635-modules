@@ -312,7 +312,6 @@ struct fts_ts_data {
 	struct mutex cmd_update_mutex;
 	int fod_status;
 	bool high_report_rate;
-	bool edge_filter;
 	u8 gesture_status;
 	struct xiaomi_touch_interface xiaomi_touch;
 };
@@ -381,7 +380,6 @@ int fts_ts_remove_entry(struct fts_ts_data *ts_data);
 
 int fts_check_ts_id_gpio(struct device *dev);
 int fts_switch_report_rate(struct fts_ts_data *ts_data, bool enable);
-int fts_switch_edge_filter(struct fts_ts_data *ts_data, bool high_filter);
 
 /* Gesture functions */
 int fts_gesture_init(struct fts_ts_data *ts_data);
